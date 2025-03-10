@@ -1,0 +1,143 @@
+import React, { useState, useEffect } from "react";
+import { BrowserRouter as Router, Route, Routes, Navigate } from "react-router-dom";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, collection, getDocs } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { getStorage, ref, getDownloadURL } from "firebase/storage";
+import { initializeApp } from "firebase/app";
+import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
+
+const firebaseConfig = {
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID
+};;
+
+initializeApp(firebaseConfig);
+const auth = getAuth();
+const db = getFirestore();
+const functions = getFunctions();
+const storage = getStorage();
+
+const Home = () => {
+  const [products, setProducts] = useState([]);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+
+  useEffect(() => {
+    const fetchProducts = async () => {
+      const querySnapshot = await getDocs(collection(db, "products"));
+      setProducts(querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    };
+    fetchProducts();
+  }, []);
+
+  return (
+    <div>
+      <h1>Welcome to the Marketplace</h1>
+      <ul>
+        {products.map(product => (
+          <li key={product.id}>
+            {product.title} - ${product.price}
+            <button onClick={() => setSelectedProduct(product)}>Buy Now</button>
+          </li>
+        ))}
+      </ul>
+      {selectedProduct && <Payment product={selectedProduct} />}
+    </div>
+  );
+};
+
+const Payment = ({ product }) => {
+  const sendEmail = httpsCallable(functions, "sendPurchaseEmail");
+  const user = auth.currentUser;
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  
+  const handlePaymentSuccess = async (details) => {
+    const buyerEmail = details.payer.email_address;
+    alert("Payment Successful! File will be sent to your email.");
+
+    try {
+      const fileRef = ref(storage, product.filePath);
+      const downloadURL = await getDownloadURL(fileRef);
+      
+      try {
+      await sendEmail({
+        email: buyerEmail,
+        productTitle: product.title,
+        downloadLink: downloadURL
+      });
+      console.log("✅ Email sent successfully!");
+    } catch (error) {
+      console.error("❌ Error sending email:", error);
+      alert("There was an issue sending your email. Please contact support.");
+    }
+    } catch (error) {
+      console.error("Error sending email", error);
+    }
+  };
+  
+  return (
+    <PayPalScriptProvider options={{ "client-id": "AXNSawMDqcuAxhEUqGq9X4aMBFpizEHKzITcok_RQpvdMEJT_5h5Rvr8c-BTZoUhC4dQEhoGseNebroy" }}>
+      <h2>Complete Purchase for {product.title}</h2>
+      <PayPalButtons
+        createOrder={(data, actions) => {
+          return actions.order.create({
+            purchase_units: [{
+              amount: { value: product.price }
+            }]
+          });
+        }}
+        onApprove={(data, actions) => {
+          return actions.order.capture()
+  .then(handlePaymentSuccess)
+  .catch((error) => {
+    console.error("Payment Error:", error);
+    alert("Payment failed. Please try again.");
+  });
+        }}
+      />
+    </PayPalScriptProvider>
+  );
+};
+
+const Login = () => {
+  const [user, setUser] = useState(null);
+  
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const signInWithGoogle = async () => {
+  try {
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(auth, provider);
+  } catch (error) {
+    console.error("Google Sign-In Error:", error);
+    alert("Sign-in failed. Please try again.");
+  }
+  };
+
+  return user ? <Navigate to="/" replace /> : <button onClick={signInWithGoogle}>Sign in with Google</button>;
+};
+
+const App = () => {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/login" element={<Login />} />
+      </Routes>
+    </Router>
+  );
+};
+
+export default App;
